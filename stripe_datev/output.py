@@ -1,5 +1,5 @@
 from datetime import datetime
-from . import config, customer
+from . import config, customer, csv
 import os
 
 fields = [
@@ -195,7 +195,14 @@ def printRecords(textFileHandle, records, fromTime=None, toTime=None, bezeichung
     record["Buchungstext"] = "\"{}\"".format(record["Buchungstext"][:60])
 
     # print(record)
-    recordValues = [record.get(f, '') for f in fields]
+    recordValues = []
+    for field in fields:
+      value = record.get(field, '')
+      if value is None:
+        value = ''
+      elif not isinstance(value, str):
+        value = str(value)
+      recordValues.append(value)
     textFileHandle.write(";".join(recordValues))
     textFileHandle.write("\n")
 
@@ -508,6 +515,7 @@ def printAccounts(textFileHandle, customers):
   for cus in customers:
     acc_props = customer.getAccountingProps(cus)
     vat_id = acc_props["vat_id"]
+    address = customer.getCustomerAddress(cus)
 
     record = {
       "Konto": acc_props["customer_account"],
@@ -515,11 +523,11 @@ def printAccounts(textFileHandle, customers):
       "Adressattyp": "2",
       "EU-Land": vat_id[:2] if vat_id is not None else "",
       "EU-UStID": vat_id[2:] if vat_id is not None else "",
-      "Straße": cus.address.line1 or "",
-      "Adresszusatz": cus.address.line2 or "",
-      "Postleitzahl": cus.address.postal_code or "",
-      "Ort": cus.address.city or "",
-      "Land": cus.address.country or "",
+      "Straße": customer.getAddressField(address, "line1") or "",
+      "Adresszusatz": customer.getAddressField(address, "line2") or "",
+      "Postleitzahl": customer.getAddressField(address, "postal_code") or "",
+      "Ort": customer.getAddressField(address, "city") or "",
+      "Land": customer.getAddressField(address, "country") or "",
       "E-Mail": cus.email or "",
     }
 

@@ -1,27 +1,15 @@
 import stripe
 import decimal
 from datetime import datetime, timezone
-from . import customer, dateparser, output, config, invoices
+from . import customer, dateparser, output, config, invoices, references
 
 
 def chargeHasInvoice(charge):
   return charge.invoice is not None
 
 
-checkoutSessionsByPaymentIntent = {}
-
-
 def getCheckoutSessionViaPaymentIntentCached(id):
-  if id in checkoutSessionsByPaymentIntent:
-    return checkoutSessionsByPaymentIntent[id]
-  sessions = stripe.checkout.Session.list(
-    payment_intent=id, expand=["data.line_items"]).data
-  if len(sessions) > 0:
-    session = sessions[0]
-  else:
-    session = None
-  checkoutSessionsByPaymentIntent[id] = session
-  return session
+  return references.get_checkout_session_via_payment_intent_cached(id)
 
 
 def getChargeDescription(charge):
@@ -61,8 +49,9 @@ def createRevenueItems(charges):
             charge.id, charge.description)
       continue
 
-    cus = customer.retrieveCustomer(charge.customer)
     session = getCheckoutSessionViaPaymentIntentCached(charge.payment_intent)
+    cus = customer.resolveCustomer(
+      charge.customer, checkout_session=session, charge=charge)
 
     accounting_props = customer.getAccountingProps(
       cus, checkout_session=session)
@@ -93,6 +82,9 @@ def createRevenueItems(charges):
       "amount_net": net_amount,
       "accounting_props": accounting_props,
       "customer": cus,
+      "stripe_reference": charge.id,
+      "order_reference": references.get_order_reference(
+        charge=charge, checkout_session=session),
       "amount_with_tax": charge_amount,
       "tax_percentage": tax_percentage,
       "text": text,

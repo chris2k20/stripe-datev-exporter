@@ -48,6 +48,7 @@ class StripeDatevCli(object):
       'list_accounts',
       'opos',
       'fees',
+      'fees_csv',
       'preview'
     ])
 
@@ -318,6 +319,38 @@ class StripeDatevCli(object):
 
     print("Fees: {0:.2f} EUR".format(feesTotal))
     print("Contributions {0:.2f} EUR".format(contributionsTotal))
+
+  def fees_csv(self, argv):
+    parser = argparse.ArgumentParser(prog="stripe-datev-cli.py fees_csv")
+    parser.add_argument('year', type=int, help='year to download data for')
+    parser.add_argument('month', type=int, help='month to download data for')
+
+    args = parser.parse_args(argv)
+
+    year = int(args.year)
+    month = int(args.month)
+
+    fromTime = pytz.utc.localize(datetime(year, month, 1, 0, 0, 0, 0))
+    toTime = pytz.utc.localize(
+      datetime(year, month + 1, 1, 0, 0, 0, 0) if month <= 11 else datetime(year + 1, 1, 1, 0, 0, 0, 0))
+
+    print("Retrieving data between {} and {} (inclusive, {})".format(fromTime.strftime(
+      "%Y-%m-%d"), (toTime - timedelta(0, 1)).strftime("%Y-%m-%d"), timezone.utc))
+
+    balance_transactions = list(reversed(list(stripe_datev.balance.listBalanceTransactions(
+      fromTime, toTime))))
+    print("Retrieved {} balance transaction(s)".format(len(balance_transactions)))
+
+    fees_dir = os.path.join(out_dir, "fees")
+    if not os.path.exists(fees_dir):
+      os.mkdir(fees_dir)
+
+    file_path = os.path.join(
+      fees_dir, "fees-{:04d}-{:02d}.csv".format(year, month))
+    with open(file_path, "w", encoding="utf-8") as fp:
+      fp.write(stripe_datev.balance.to_fees_csv(balance_transactions))
+      print("Wrote fee report to {}".format(
+        os.path.relpath(fp.name, os.getcwd())))
 
   def preview(self, argv):
     object_id = argv[0]

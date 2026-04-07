@@ -4,7 +4,7 @@ import stripe
 import decimal
 import math
 from datetime import datetime, timedelta, timezone
-from . import customer, output, dateparser, config
+from . import customer, output, dateparser, config, references
 import datedelta
 
 invoices_cached = {}
@@ -183,6 +183,8 @@ def createRevenueItems(invs):
       "amount_net": amount_net,
       "accounting_props": accounting_props,
       "customer": cus,
+      "stripe_reference": invoice.id,
+      "order_reference": references.get_order_reference(invoice=invoice),
       "amount_with_tax": amount_with_tax,
       "tax_percentage": tax_percentage,
       "text": "Invoice {}".format(invoice.number),
@@ -208,6 +210,8 @@ def createAccountingRecords(revenue_item):
   credited_amount = revenue_item.get("credited_amount", None)
   marked_uncollectible_at = revenue_item.get("marked_uncollectible_at", None)
   number = revenue_item["number"]
+  stripe_reference = revenue_item.get("stripe_reference", revenue_item["id"])
+  order_reference = revenue_item.get("order_reference")
   eu_vat_id = accounting_props["vat_id"] or ""
 
   records = []
@@ -350,6 +354,13 @@ def createAccountingRecords(revenue_item):
       if month_total != 0:
         records += prap_records_by_month[month]
 
+  for record in records:
+    references.set_record_identifiers(
+      record,
+      stripe_reference=stripe_reference,
+      order_reference=order_reference,
+    )
+
   return records
 
 
@@ -374,6 +385,7 @@ def to_csv(inv):
     "customer_account",
     "revenue_account",
     "datev_tax_key",
+    "order_reference",
   ]]
   for invoice in inv:
     if invoice.status == "void":
@@ -409,6 +421,7 @@ def to_csv(inv):
       props["customer_account"],
       props["revenue_account"],
       props["datev_tax_key_invoice"],
+      references.get_order_reference(invoice=invoice),
     ])
 
   return csv.lines_to_csv(lines)
@@ -430,6 +443,7 @@ def to_recognized_month_csv2(revenue_items):
     "customer_id",
     "customer_name",
     "country",
+    "order_reference",
 
     "accounting_date",
     "revenue_type",
@@ -471,7 +485,9 @@ def to_recognized_month_csv2(revenue_items):
 
           revenue_item["customer"]["id"],
           customer.getCustomerName(revenue_item["customer"]),
-          revenue_item["customer"].get("address", {}).get("country", ""),
+          customer.getAddressField(
+            customer.getCustomerAddress(revenue_item["customer"]), "country") or "",
+          revenue_item.get("order_reference", ""),
 
           accounting_date.strftime("%Y-%m-%d"),
           revenue_type,
@@ -481,14 +497,14 @@ def to_recognized_month_csv2(revenue_items):
         if voided_at is not None:
           reverse = lines[-1].copy()
           reverse[8] = format(month["amounts"][0] * -1, ".2f")
-          reverse[12] = max(revenue_item["created"], end if end <
+          reverse[13] = max(revenue_item["created"], end if end <
                             month["end"] else month["start"]).strftime("%Y-%m-%d")
           lines.append(reverse)
 
         elif marked_uncollectible_at is not None:
           reverse = lines[-1].copy()
           reverse[8] = format(month["amounts"][0] * -1, ".2f")
-          reverse[12] = max(revenue_item["created"], end if end <
+          reverse[13] = max(revenue_item["created"], end if end <
                             month["end"] else month["start"]).strftime("%Y-%m-%d")
           lines.append(reverse)
 
@@ -496,7 +512,7 @@ def to_recognized_month_csv2(revenue_items):
           reverse = lines[-1].copy()
           reverse[8] = format(month["amounts"][0] * -1 *
                               (credited_amount / amount_with_tax), ".2f")
-          reverse[12] = max(revenue_item["created"], end if end <
+          reverse[13] = max(revenue_item["created"], end if end <
                             month["end"] else month["start"]).strftime("%Y-%m-%d")
           lines.append(reverse)
 

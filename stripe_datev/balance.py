@@ -1,7 +1,7 @@
 import stripe
 import decimal
 from datetime import datetime, timezone
-from . import customer, output, config
+from . import customer, output, config, references, csv
 
 
 def listBalanceTransactions(fromTime, toTime):
@@ -28,8 +28,9 @@ def createAccountingRecords(balance_transactions):
 
     if tx["reporting_category"] == "charge" or tx["reporting_category"] == "charge_failure":
       charge = tx.source
-      cus = customer.retrieveCustomer(charge.customer)
+      cus = customer.resolveCustomer(charge.customer, charge=charge)
       accounting_props = customer.getAccountingProps(cus)
+      order_reference = references.get_order_reference(charge=charge)
       if charge.invoice:
         number = charge.invoice.number
       else:
@@ -47,6 +48,13 @@ def createAccountingRecords(balance_transactions):
         "Buchungstext": "Stripe Payment ({})".format(charge.id),
         "Belegfeld 1": number,
       })
+      references.set_record_identifiers(
+        records[-1],
+        stripe_reference=charge.id,
+        order_reference=order_reference,
+        extra_label="stripe_balance_txn_id",
+        extra_value=tx.id,
+      )
 
       records.append({
         "date": created,
@@ -60,6 +68,13 @@ def createAccountingRecords(balance_transactions):
         # this makes it easier to associate a fee with a montly invoice
         "Belegfeld 1": created.astimezone(timezone.utc).strftime("%Y-%m"),
       })
+      references.set_record_identifiers(
+        records[-1],
+        stripe_reference=charge.id,
+        order_reference=order_reference,
+        extra_label="stripe_balance_txn_id",
+        extra_value=tx.id,
+      )
 
     elif tx["reporting_category"] == "payout":
       records.append({
@@ -71,11 +86,18 @@ def createAccountingRecords(balance_transactions):
         "Gegenkonto (ohne BU-Schlüssel)": str(config.accounts["bank"]),
         "Buchungstext": "Stripe Payout {}".format(tx.source.id),
       })
+      references.set_record_identifiers(
+        records[-1],
+        stripe_reference=tx.source.id,
+        extra_label="stripe_balance_txn_id",
+        extra_value=tx.id,
+      )
 
     elif tx["reporting_category"] == "refund":
       charge = tx.source.charge
-      cus = customer.retrieveCustomer(charge.customer)
+      cus = customer.resolveCustomer(charge.customer, charge=charge)
       accounting_props = customer.getAccountingProps(cus)
+      order_reference = references.get_order_reference(charge=charge)
       if charge.invoice:
         number = charge.invoice.number
       else:
@@ -91,6 +113,13 @@ def createAccountingRecords(balance_transactions):
         "Buchungstext": "Stripe Payment Refund ({})".format(charge.id),
         "Belegfeld 1": number,
       })
+      references.set_record_identifiers(
+        records[-1],
+        stripe_reference=charge.id,
+        order_reference=order_reference,
+        extra_label="stripe_balance_txn_id",
+        extra_value=tx.id,
+      )
 
     elif tx["reporting_category"] == "contribution":
       records.append({
@@ -103,6 +132,10 @@ def createAccountingRecords(balance_transactions):
         "Buchungstext": "Stripe {} {}".format(tx["description"] or "Contribution", tx["id"]),
         "Belegfeld 1": created.astimezone(timezone.utc).strftime("%Y-%m"),
       })
+      references.set_record_identifiers(
+        records[-1],
+        stripe_reference=tx.id,
+      )
 
     elif tx["reporting_category"] == "transfer":
       transfer = tx.source
@@ -122,6 +155,12 @@ def createAccountingRecords(balance_transactions):
         "Buchungstext": "Fremdleistung {} anteilig".format(invoiceNumber or transfer.id),
         "Belegfeld 1": transfer.id,
       })
+      references.set_record_identifiers(
+        records[-1],
+        stripe_reference=transfer.id,
+        extra_label="stripe_balance_txn_id",
+        extra_value=tx.id,
+      )
 
       records.append({
         "date": created,
@@ -133,6 +172,12 @@ def createAccountingRecords(balance_transactions):
         "Buchungstext": "Fremdleistung {} anteilig".format(invoiceNumber or transfer.id),
         "Belegfeld 1": transfer.id,
       })
+      references.set_record_identifiers(
+        records[-1],
+        stripe_reference=transfer.id,
+        extra_label="stripe_balance_txn_id",
+        extra_value=tx.id,
+      )
 
     elif tx["reporting_category"] == "fee":
       records.append({
@@ -147,6 +192,10 @@ def createAccountingRecords(balance_transactions):
         # this makes it easier to associate a fee with a montly invoice
         "Belegfeld 1": created.astimezone(timezone.utc).strftime("%Y-%m"),
       })
+      references.set_record_identifiers(
+        records[-1],
+        stripe_reference=tx.id,
+      )
 
     elif tx["reporting_category"] == "payout_minimum_balance_hold" or tx["reporting_category"] == "payout_minimum_balance_release":
       # Not relevant for accounting on the company side
@@ -157,6 +206,69 @@ def createAccountingRecords(balance_transactions):
         "Warning: unsupported balance transaction type:", tx["type"], "reporting_category:", tx["reporting_category"], tx["id"])
 
   return records
+
+
+def to_fees_csv(balance_transactions):
+  rows = [[
+    "date",
+    "balance_transaction_id",
+    "source_id",
+    "source_type",
+    "reporting_category",
+    "fee_type",
+    "description",
+    "fee_amount_eur",
+    "currency",
+    "invoice_number",
+    "stripe_reference",
+    "order_reference",
+  ]]
+
+  for tx in balance_transactions:
+    created = datetime.fromtimestamp(
+      tx.created, timezone.utc).astimezone(config.accounting_tz)
+
+    if tx.fee and len(tx.fee_details) > 0:
+      charge = tx.source if tx["reporting_category"] in ["charge", "charge_failure"] else tx.source.charge if tx["reporting_category"] == "refund" and tx.source and tx.source.charge else None
+      invoice_number = charge.invoice.number if charge and charge.invoice else None
+      stripe_reference = charge.id if charge else tx.id
+      order_reference = references.get_order_reference(
+        charge=charge) if charge else None
+
+      for fee_detail in tx.fee_details:
+        rows.append([
+          created.strftime("%Y-%m-%d"),
+          tx.id,
+          charge.id if charge else "",
+          charge.object if charge else "",
+          tx["reporting_category"],
+          fee_detail.type or "",
+          fee_detail.description or tx.description or "",
+          format(decimal.Decimal(fee_detail.amount) / 100, ".2f"),
+          fee_detail.currency.upper() if fee_detail.currency else tx.currency.upper(),
+          invoice_number,
+          stripe_reference,
+          order_reference,
+        ])
+
+    elif tx["reporting_category"] in ["fee", "contribution"]:
+      source = tx.source
+      rows.append([
+        created.strftime("%Y-%m-%d"),
+        tx.id,
+        source.id if source else "",
+        source.object if source else "",
+        tx["reporting_category"],
+        "",
+        tx.description or "",
+        format(abs(decimal.Decimal(tx.amount) / 100), ".2f"),
+        tx.currency.upper(),
+        "",
+        tx.id,
+        "",
+      ])
+
+  return csv.lines_to_csv(rows)
 
 
 def extractCharges(balance_transactions):
