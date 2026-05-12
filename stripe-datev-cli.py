@@ -1,3 +1,4 @@
+import calendar
 import decimal
 from functools import reduce
 import sys
@@ -236,7 +237,11 @@ class StripeDatevCli(object):
 
   def opos(self, argv):
     if len(argv) > 0:
-      ref = datetime(*list(map(int, argv))) + \
+      int_args = list(map(int, argv))
+      # If only year+month given, default day to last day of that month
+      if len(int_args) == 2:
+        int_args.append(calendar.monthrange(int_args[0], int_args[1])[1])
+      ref = datetime(*int_args) + \
           timedelta(days=1) - timedelta(seconds=1)
       status = None
     else:
