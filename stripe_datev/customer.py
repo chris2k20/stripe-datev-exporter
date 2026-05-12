@@ -121,8 +121,12 @@ def getAccountingProps(customer, invoice=None, checkout_session=None):
   else:
     props["customer_account"] = str(config.accounts["sammel_debitor"])
 
-  address = customer.address or customer.shipping.address
-  country = address.country
+  address = customer.address or (customer.shipping.address if customer.shipping else None)
+  if address is None:
+    print("WARN: No address for customer {} - defaulting country to DE".format(customer.id))
+    country = "DE"
+  else:
+    country = address.country
 
   invoice_tax = None
   invoice_total = None
