@@ -216,9 +216,13 @@ def fill_account_numbers():
         metadata_new[old_key] = ""
 
     # print("Update", metadata_new)
-    stripe.Customer.modify(customer.id, metadata=metadata_new)
-
-    print(customer.id, highest_account_number)
+    try:
+      stripe.Customer.modify(customer.id, metadata=metadata_new)
+      print(customer.id, highest_account_number)
+    except stripe.PermissionError as e:
+      print("WARN: Cannot persist accountNumber for {} to Stripe - permission denied ({})".format(
+        customer.id, e.user_message if hasattr(e, 'user_message') else str(e)))
+      print("  (account number {} assigned locally only)".format(highest_account_number))
 
 
 def list_account_numbers(file_path):
