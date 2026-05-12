@@ -1,10 +1,37 @@
 from datetime import datetime, timezone
+import json
+import os
 import sys
 import stripe
 
 from stripe_datev import config, output
 
 customers_cached = {}
+
+# Local fallback for accountNumbers that couldn't be written to Stripe
+# (e.g. when using a restricted key without customer:write permission)
+_LOCAL_ACCOUNT_NUMBERS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "out", "local_account_numbers.json")
+_local_account_numbers_cache = None
+
+def _load_local_account_numbers():
+  global _local_account_numbers_cache
+  if _local_account_numbers_cache is None:
+    if os.path.exists(_LOCAL_ACCOUNT_NUMBERS_FILE):
+      with open(_LOCAL_ACCOUNT_NUMBERS_FILE, "r") as f:
+        _local_account_numbers_cache = json.load(f)
+    else:
+      _local_account_numbers_cache = {}
+  return _local_account_numbers_cache
+
+def _save_local_account_numbers(mapping):
+  os.makedirs(os.path.dirname(_LOCAL_ACCOUNT_NUMBERS_FILE), exist_ok=True)
+  # Merge with existing
+  existing = _load_local_account_numbers()
+  existing.update(mapping)
+  with open(_LOCAL_ACCOUNT_NUMBERS_FILE, "w") as f:
+    json.dump(existing, f, indent=2)
+  global _local_account_numbers_cache
+  _local_account_numbers_cache = existing
 
 
 def retrieveCustomer(id):
@@ -83,9 +110,14 @@ def getAccountingProps(customer, invoice=None, checkout_session=None):
   }
 
   if (invoice is None or datetime.fromtimestamp(invoice.status_transitions.finalized_at, timezone.utc) >= datetime(2022, 1, 1, 0, 0).astimezone(config.accounting_tz)):
-    if not customer.metadata.get("accountNumber", None):
-      raise Exception("Expected 'accountNumber' in metadata")
-    props["customer_account"] = customer.metadata["accountNumber"]
+    acct_num = customer.metadata.get("accountNumber", None)
+    if not acct_num:
+      # Fallback: check local file (used when Stripe key lacks customer:write)
+      local_map = _load_local_account_numbers()
+      acct_num = local_map.get(customer.id, None)
+    if not acct_num:
+      raise Exception("Expected 'accountNumber' in metadata for customer {}".format(customer.id))
+    props["customer_account"] = acct_num
   else:
     props["customer_account"] = str(config.accounts["sammel_debitor"])
 
@@ -203,6 +235,7 @@ def fill_account_numbers():
   print("{} customers without account number, highest number is {}".format(
     len(fill_customers), highest_account_number))
 
+  local_assignments = {}
   for customer in reversed(fill_customers):
     # print(customer.id, customer.metadata)
 
@@ -220,9 +253,14 @@ def fill_account_numbers():
       stripe.Customer.modify(customer.id, metadata=metadata_new)
       print(customer.id, highest_account_number)
     except stripe.PermissionError as e:
-      print("WARN: Cannot persist accountNumber for {} to Stripe - permission denied ({})".format(
-        customer.id, e.user_message if hasattr(e, 'user_message') else str(e)))
-      print("  (account number {} assigned locally only)".format(highest_account_number))
+      print("WARN: Cannot persist accountNumber for {} to Stripe - permission denied".format(customer.id))
+      print("  (account number {} saved to local fallback file)".format(highest_account_number))
+      local_assignments[customer.id] = str(highest_account_number)
+
+  if local_assignments:
+    _save_local_account_numbers(local_assignments)
+    print("INFO: {} account numbers saved to local fallback: {}".format(
+      len(local_assignments), _LOCAL_ACCOUNT_NUMBERS_FILE))
 
 
 def list_account_numbers(file_path):
