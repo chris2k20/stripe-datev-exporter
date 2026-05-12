@@ -515,11 +515,11 @@ def printAccounts(textFileHandle, customers):
       "Adressattyp": "2",
       "EU-Land": vat_id[:2] if vat_id is not None else "",
       "EU-UStID": vat_id[2:] if vat_id is not None else "",
-      "Straße": cus.address.line1 or "",
-      "Adresszusatz": cus.address.line2 or "",
-      "Postleitzahl": cus.address.postal_code or "",
-      "Ort": cus.address.city or "",
-      "Land": cus.address.country or "",
+      "Straße": (cus.address.line1 if cus.address else None) or "",
+      "Adresszusatz": (cus.address.line2 if cus.address else None) or "",
+      "Postleitzahl": (cus.address.postal_code if cus.address else None) or "",
+      "Ort": (cus.address.city if cus.address else None) or "",
+      "Land": (cus.address.country if cus.address else None) or "",
       "E-Mail": cus.email or "",
     }
 
