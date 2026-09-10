@@ -9,8 +9,17 @@ from stripe_datev import config, output
 customers_cached = {}
 
 # Local fallback for accountNumbers that couldn't be written to Stripe
-# (e.g. when using a restricted key without customer:write permission)
-_LOCAL_ACCOUNT_NUMBERS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "out", "local_account_numbers.json")
+# (e.g. when using a restricted key without customer:write permission).
+# A read-only deployment may keep the canonical mapping in another repository.
+_DEFAULT_LOCAL_ACCOUNT_NUMBERS_FILE = os.path.join(
+  os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+  "out",
+  "local_account_numbers.json",
+)
+_LOCAL_ACCOUNT_NUMBERS_FILE = os.environ.get(
+  "STRIPE_DATEV_LOCAL_ACCOUNT_NUMBERS_FILE",
+  _DEFAULT_LOCAL_ACCOUNT_NUMBERS_FILE,
+)
 _local_account_numbers_cache = None
 
 def _load_local_account_numbers():
