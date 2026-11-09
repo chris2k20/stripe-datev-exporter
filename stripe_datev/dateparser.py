@@ -32,6 +32,12 @@ DAY_REGEX = re.compile("(?<=[\D^])([0-9]{1,2})(?:st|nd|rd|th)(?=\W|$)", re.M)
 
 
 def find_date_range(text, ref_date=None, tz=None):
+  # Numeric German dates are not supported by the English month/day parser.
+  # In particular, separate visits are not a continuous annual service period.
+  # Return unknown so callers emit their explicit period-review warning instead
+  # of silently interpreting an isolated year as January through December.
+  if re.search(r'(?<!\d)\d{1,2}\.\d{1,2}\.(?!\d)|(?<!\d)\d{1,2}\.\d{1,2}\.\d{4}(?!\d)', text or ''):
+    return None
   years = [int(y) for y in YEAR_REGEX.findall(text)]
   months = []
   for match in MONTH_REGEX.findall(text):
