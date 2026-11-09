@@ -63,7 +63,8 @@ def getCustomerName(customer):
   if customer.description is not None:
     return customer.description
   else:
-    return customer.name
+    # Preserve a missing identity as blank instead of crashing CSV serialization.
+    return customer.name or ""
 
 
 tax_ids_cached = {}
