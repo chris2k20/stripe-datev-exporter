@@ -101,7 +101,38 @@ def getLineItemRecognitionRange(line_item, invoice):
   return start.astimezone(config.accounting_tz), end.astimezone(config.accounting_tz)
 
 
+def validate_refunded_invoices():
+  """Block missing refund documents, including refunds of older invoices.
+
+  Refund amounts are used only to check document coverage, never to synthesize
+  revenue/VAT reversals. Only issued post-payment credit notes can cover them.
+  """
+  refunded = {}
+  for charge in stripe.Charge.list(limit=100).auto_paging_iter():
+    invoice_ref = charge.get("invoice")
+    amount = charge.get("amount_refunded", 0)
+    if not invoice_ref or amount <= 0:
+      continue
+    invoice_id = invoice_ref if isinstance(invoice_ref, str) else invoice_ref["id"]
+    refunded[invoice_id] = refunded.get(invoice_id, 0) + amount
+
+  problems = []
+  for invoice_id, amount in refunded.items():
+    invoice = retrieveInvoice(invoice_id)
+    notes = [cn for cn in stripe.CreditNote.list(
+      invoice=invoice_id, limit=100).auto_paging_iter()
+      if cn.get("status") == "issued" and cn.get("currency") == invoice.currency]
+    if not notes:
+      problems.append("Rechnung {} erstattet, aber keine Gutschrift, bitte in Stripe anlegen".format(invoice.number))
+    elif sum(cn.get("post_payment_amount", 0) for cn in notes) < amount:
+      problems.append("Rechnung {} erstattet, aber Gutschrift deckt die Erstattung nicht vollstaendig; bitte in Stripe pruefen".format(invoice.number))
+  if problems:
+    raise ValueError("\n".join(problems))
+  return len(refunded)
+
+
 def createRevenueItems(invs):
+  validate_refunded_invoices()
   revenue_items = []
   for invoice in invs:
     if invoice["metadata"].get("stripe-datev-exporter:ignore", "false") == "true":
@@ -119,13 +150,20 @@ def createRevenueItems(invs):
 
     credited_at = None
     credited_amount = None
+    credit_note_number = None
     if invoice.post_payment_credit_notes_amount > 0:
-      cns = stripe.CreditNote.list(invoice=invoice.id).data
+      cns = [cn for cn in stripe.CreditNote.list(
+        invoice=invoice.id, limit=100).auto_paging_iter()
+        if cn.get("status") == "issued" and cn.get("currency") == invoice.currency]
       assert len(cns) == 1
+      credit_timestamp = cns[0].get("effective_at")
+      if credit_timestamp is None:
+        credit_timestamp = cns[0].created
       credited_at = datetime.fromtimestamp(
-        cns[0].created, timezone.utc).astimezone(config.accounting_tz)
+        credit_timestamp, timezone.utc).astimezone(config.accounting_tz)
       credited_amount = decimal.Decimal(
         invoice.post_payment_credit_notes_amount) / 100
+      credit_note_number = cns[0].number
 
     line_items = []
 
@@ -189,6 +227,7 @@ def createRevenueItems(invs):
       "voided_at": voided_at,
       "credited_at": credited_at,
       "credited_amount": credited_amount,
+      "credit_note_number": credit_note_number,
       "marked_uncollectible_at": marked_uncollectible_at,
       "line_items": line_items,
       "is_subscription": is_subscription,
@@ -267,8 +306,8 @@ def createAccountingRecords(revenue_item):
         "Konto": accounting_props["customer_account"],
         "Gegenkonto (ohne BU-Schlüssel)": accounting_props["revenue_account"],
         "BU-Schlüssel": accounting_props["datev_tax_key_invoice"],
-        "Buchungstext": "Erstattung {}".format(text),
-        "Belegfeld 1": number,
+        "Buchungstext": "Gutschrift {} zu {}".format(revenue_item.get("credit_note_number"), text),
+        "Belegfeld 1": revenue_item.get("credit_note_number") or number,
         "EU-Land u. UStID": eu_vat_id,
       })
 
